@@ -223,7 +223,13 @@ function seedDoAdmin(campo) {
       if (!snap.exists) {
         throw new Error('Banco curado (visitante/publico) não encontrado.');
       }
-      var dbAdmin = snap.data() && snap.data()[campo];
+      var dados = snap.data() || {};
+      // Compat legado: o app Gerar-laudo-EDA grava visitante/publico
+      // como { db: ... } em vez de { dbEDA: ... }. Aceitamos esse
+      // campo como fonte do seed apenas para EDA, porque o conteúdo
+      // que o admin escreve em `db` é o banco de EDA.
+      var dbAdmin = dados[campo];
+      if (!dbAdmin && campo === 'dbEDA') dbAdmin = dados.db;
       if (!dbAdmin) {
         throw new Error('Banco curado não tem ' +
                         (campo === 'dbEDA' ? 'EDA' : 'Colono') + ' disponível.');
@@ -584,8 +590,8 @@ function receberArquivos(novos) {
 
   // Filtros: extensão, tamanho, duplicatas
   novos.forEach(function (f) {
-    if (!/\.docx$/i.test(f.name)) {
-      problemas.push(f.name + ' — não é .docx');
+    if (!/\.(docx|doc|txt|rtf)$/i.test(f.name)) {
+      problemas.push(f.name + ' — formato não suportado (.docx, .doc, .txt, .rtf)');
       return;
     }
     if (f.size > MAX_BYTES_ARQ) {

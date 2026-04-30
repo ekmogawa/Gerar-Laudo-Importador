@@ -89,10 +89,13 @@
       </div>
 
       <div class="card">
-        <h2>Importar laudos Word</h2>
+        <h2>Importar laudos</h2>
         <p style="font-size:13px;color:#555;margin-top:0;">
-          Selecione ou arraste de 1 a 20 arquivos <code>.docx</code>. O conteúdo
-          é processado localmente — nada é enviado para servidor.
+          Selecione ou arraste de 1 a 20 arquivos
+          <code>.docx</code>, <code>.doc</code>, <code>.txt</code> ou
+          <code>.rtf</code>. O conteúdo é processado localmente —
+          nada é enviado para servidor. <em>.doc</em> usa extração
+          best-effort; prefira <em>.docx</em> quando possível.
         </p>
 
         <div id="zona-upload" class="zona-upload">
@@ -101,7 +104,8 @@
           <button id="btn-selecionar" class="acao secundaria" type="button">
             Selecionar arquivos
           </button>
-          <input id="input-arquivos" type="file" accept=".docx" multiple hidden>
+          <input id="input-arquivos" type="file"
+                 accept=".docx,.doc,.txt,.rtf" multiple hidden>
         </div>
 
         <ul id="lista-arquivos" class="lista-arquivos"></ul>

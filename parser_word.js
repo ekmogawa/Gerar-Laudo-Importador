@@ -301,6 +301,189 @@
   }
 
   // ----------------------------------------------------------
+  // Helpers de texto plano -> HTML (.txt, .rtf, .doc)
+  // ----------------------------------------------------------
+  function escaparHtmlTexto(s) {
+    return String(s)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
+  }
+
+  // Linhas em branco separam parágrafos; quebras simples viram <br>.
+  function textoPlanoParaHtml(texto) {
+    var paragrafos = String(texto || '').split(/\r?\n\s*\r?\n+/);
+    return paragrafos.map(function (par) {
+      var linhas = par.split(/\r?\n/)
+        .map(function (l) { return escaparHtmlTexto(l.trim()); })
+        .filter(function (l) { return l.length; });
+      if (!linhas.length) return '';
+      return '<p>' + linhas.join('<br>') + '</p>';
+    }).filter(Boolean).join('');
+  }
+
+  // Despoja RTF de control words/escapes e devolve texto plano.
+  // Cobertura suficiente para RTFs gerados pelo Word/LibreOffice;
+  // tabelas/campos complexos podem perder formatação mas o texto
+  // sai legível.
+  function rtfParaTexto(rtf) {
+    if (!rtf) return '';
+    var s = String(rtf);
+    // Remove grupos de metadados (font/color/style/info/etc.)
+    s = s.replace(
+      /\{\\\*?\\(?:fonttbl|colortbl|stylesheet|info|generator|listtable|listoverridetable|rsidtbl|datastore|themedata|latentstyles|filetbl|fldinst|pict|object|bin|header|footer|footnote|annotation|nonshppict)[^{}]*(?:\{[^{}]*\}[^{}]*)*\}/gi,
+      ''
+    );
+    // \par / \line viram quebra; \tab vira tab
+    s = s.replace(/\\par[d]?\b\s?/g, '\n');
+    s = s.replace(/\\line\b\s?/g, '\n');
+    s = s.replace(/\\tab\b\s?/g, '\t');
+    // \'XX (CP1252)
+    s = s.replace(/\\'([0-9a-fA-F]{2})/g, function (_, h) {
+      return String.fromCharCode(parseInt(h, 16));
+    });
+    // \uNNNN (signed 16-bit Unicode)
+    s = s.replace(/\\u(-?\d+)\??/g, function (_, n) {
+      var code = parseInt(n, 10);
+      if (code < 0) code += 65536;
+      return String.fromCharCode(code);
+    });
+    // Sequências escapadas
+    s = s.replace(/\\\\/g, '\\').replace(/\\\{/g, '{').replace(/\\\}/g, '}');
+    // Control words restantes
+    s = s.replace(/\\[a-zA-Z]+(-?\d+)?\s?/g, '');
+    // Control symbols restantes
+    s = s.replace(/\\[^a-zA-Z\\]/g, '');
+    // Chaves de grupo
+    s = s.replace(/[{}]/g, '');
+    return s;
+  }
+
+  // Extração best-effort de .doc binário (Word 97+ CFB). Sem parser
+  // de OLE/CFB, varremos o buffer por runs imprimíveis em UTF-16LE
+  // (encoding interno do Word) e caímos para ASCII se UTF-16 não
+  // render. Pode falhar em .doc protegido/criptografado ou Word 6/95.
+  function extrairTextoDocBinario(buffer) {
+    var bytes = new Uint8Array(buffer);
+    var n = bytes.length;
+    var minRun = 8;
+    var trechos = [];
+    var atual = '';
+
+    // Pass UTF-16LE
+    for (var i = 0; i + 1 < n; i += 2) {
+      var lo = bytes[i], hi = bytes[i + 1];
+      var imprimivel = (hi === 0x00 && ((lo >= 0x20 && lo <= 0x7E) || lo === 0x09))
+                    || (hi >= 0x00 && hi <= 0x04 && lo >= 0x80);
+      var quebra = (hi === 0x00 && (lo === 0x0D || lo === 0x0A || lo === 0x07 || lo === 0x0B));
+      if (imprimivel) {
+        atual += String.fromCharCode((hi << 8) | lo);
+      } else if (quebra) {
+        if (atual.length >= minRun) trechos.push(atual);
+        atual = '';
+      } else {
+        if (atual.length >= minRun) trechos.push(atual);
+        atual = '';
+      }
+    }
+    if (atual.length >= minRun) trechos.push(atual);
+
+    var total = trechos.reduce(function (a, t) { return a + t.length; }, 0);
+
+    // Fallback ASCII (Word 6/95 ou docs sem texto Unicode contíguo)
+    if (total < 200) {
+      trechos = [];
+      atual = '';
+      for (var j = 0; j < n; j++) {
+        var b = bytes[j];
+        if ((b >= 0x20 && b <= 0x7E) || b === 0x09) {
+          atual += String.fromCharCode(b);
+        } else if (b === 0x0D || b === 0x0A) {
+          if (atual.length >= minRun) trechos.push(atual);
+          atual = '';
+        } else {
+          if (atual.length >= minRun) trechos.push(atual);
+          atual = '';
+        }
+      }
+      if (atual.length >= minRun) trechos.push(atual);
+    }
+
+    return trechos.join('\n');
+  }
+
+  function converterTxt(file) {
+    return new Promise(function (resolve, reject) {
+      var reader = new FileReader();
+      reader.onerror = function () { reject(new Error('Falha ao ler ' + file.name)); };
+      reader.onload = function (ev) {
+        try {
+          resolve({
+            html: textoPlanoParaHtml(ev.target.result || ''),
+            mensagens: [],
+            imagensDescartadas: 0
+          });
+        } catch (e) { reject(e); }
+      };
+      reader.readAsText(file);
+    });
+  }
+
+  function converterRtf(file) {
+    return new Promise(function (resolve, reject) {
+      var reader = new FileReader();
+      reader.onerror = function () { reject(new Error('Falha ao ler ' + file.name)); };
+      reader.onload = function (ev) {
+        try {
+          var texto = rtfParaTexto(ev.target.result || '');
+          resolve({
+            html: textoPlanoParaHtml(texto),
+            mensagens: [],
+            imagensDescartadas: 0
+          });
+        } catch (e) { reject(e); }
+      };
+      reader.readAsText(file);
+    });
+  }
+
+  function converterDocBinario(file) {
+    return new Promise(function (resolve, reject) {
+      var reader = new FileReader();
+      reader.onerror = function () { reject(new Error('Falha ao ler ' + file.name)); };
+      reader.onload = function (ev) {
+        try {
+          var texto = extrairTextoDocBinario(ev.target.result);
+          if (!texto || texto.length < 20) {
+            reject(new Error('Não foi possível extrair texto de ' + file.name +
+                             '. Salve no Word como .docx e reenvie.'));
+            return;
+          }
+          resolve({
+            html: textoPlanoParaHtml(texto),
+            mensagens: [{
+              type: 'warning',
+              message: 'Extração de .doc é best-effort; .docx dá qualidade máxima.'
+            }],
+            imagensDescartadas: 0
+          });
+        } catch (e) { reject(e); }
+      };
+      reader.readAsArrayBuffer(file);
+    });
+  }
+
+  // Dispatcher por extensão.
+  function converterArquivo(file) {
+    var nome = (file.name || '').toLowerCase();
+    if (/\.docx$/.test(nome)) return converterDocx(file);
+    if (/\.txt$/.test(nome))  return converterTxt(file);
+    if (/\.rtf$/.test(nome))  return converterRtf(file);
+    if (/\.doc$/.test(nome))  return converterDocBinario(file);
+    return Promise.reject(new Error('Formato não suportado: ' + file.name));
+  }
+
+  // ----------------------------------------------------------
   // Converte um File .docx para HTML via mammoth.js.
   //
   // O importador é apenas para texto — qualquer <img> gerada
@@ -344,7 +527,7 @@
   //   File -> HTML -> seções detectadas -> cláusulas
   // ----------------------------------------------------------
   function processarArquivo(file, tipo) {
-    return converterDocx(file).then(function (r) {
+    return converterArquivo(file).then(function (r) {
       var secoes = [];
       var orfaos = { paragrafos: [], clausulas: [] };
       var atual = null;
@@ -487,12 +670,14 @@
   global.ParserWord = {
     processarArquivos:    processarArquivos,
     processarArquivo:     processarArquivo,
+    converterArquivo:     converterArquivo,
     decomporClausulas:    decomporClausulas,
     quebrarSentencas:     quebrarSentencas,
     classificarSentenca:  classificarSentenca,
     detectarSecao:        detectarSecao,
     casarSecao:           casarSecao,
     normalizar:           normalizar,
+    rtfParaTexto:         rtfParaTexto,
     SINONIMOS:            SINONIMOS,
     ANCORAS:              ANCORAS
   };
