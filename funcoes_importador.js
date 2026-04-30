@@ -202,14 +202,41 @@ function carregarBancoUsuario() {
           return carregarBackups();
         })
         .catch(function (err) {
+          var tipoLabel = (campo === 'dbEDA') ? 'EDA' : 'Colonoscopia';
           resumo.innerHTML =
             '<div class="msg erro">Não foi possível inicializar o banco: ' +
-            escaparHtml(err.message) + '</div>';
+            escaparHtml(err.message) + '<br><br>' +
+            'Peça ao administrador para abrir o app gerador de ' +
+            tipoLabel + ', salvar uma vez, e tente novamente.</div>';
+          // Sem banco inicializado, não há backups a listar nem
+          // histórico — limpa os placeholders "Carregando…" para a
+          // UI não ficar travada.
+          var lb = document.getElementById('lista-backups');
+          if (lb) {
+            lb.innerHTML =
+              '<div class="msg info">Backups serão criados após a inicialização do banco.</div>';
+          }
+          var lh = document.getElementById('lista-historico');
+          if (lh) {
+            lh.innerHTML =
+              '<div class="msg info">Sem importações ainda.</div>';
+          }
         });
     })
     .catch(function (err) {
       resumo.innerHTML =
-        '<div class="msg erro">Erro ao carregar banco: ' + err.message + '</div>';
+        '<div class="msg erro">Erro ao carregar banco: ' +
+        escaparHtml(err.message) + '</div>';
+      var lb = document.getElementById('lista-backups');
+      if (lb) {
+        lb.innerHTML =
+          '<div class="msg erro">Indisponível: falha ao carregar banco.</div>';
+      }
+      var lh = document.getElementById('lista-historico');
+      if (lh) {
+        lh.innerHTML =
+          '<div class="msg erro">Indisponível: falha ao carregar banco.</div>';
+      }
     });
 }
 
