@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Importador de Laudos</title>
+  <link rel="stylesheet" href="estilos.css">
+
+  <!-- Firebase compat v9 (mesma versão dos apps geradores) -->
+  <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-auth-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore-compat.js"></script>
+
+  <!-- mammoth.js — converte .docx para HTML no navegador -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.7.2/mammoth.browser.min.js"></script>
+</head>
+<body>
+
+  <header>
+    <h1 id="titulo-app">Importador de Laudos</h1>
+    <div class="meta">
+      <span id="tipo-badge" class="tipo-badge">—</span>
+      <span id="email-usuario" style="margin-left:12px;"></span>
+      <button id="btn-logout" class="acao secundaria hidden" style="margin-left:12px;">Sair</button>
+    </div>
+  </header>
+
+  <main>
+    <div id="msg-erro-fatal" class="msg erro hidden"></div>
+
+    <!-- Tela "deslogado" — só aparece se o usuário abrir o importador
+         sem ter sessão ativa no gerador. O fluxo normal é entrar via
+         botão dentro do app gerador, com a sessão já iniciada. -->
+    <section id="tela-deslogado" class="card hidden">
+      <h2>Sessão necessária</h2>
+      <p style="font-size:14px;color:#555;">
+        O importador usa a mesma sessão dos apps geradores. Faça login
+        em um deles e use o botão <em>Importar laudos do Word</em>
+        para abrir o importador já autenticado.
+      </p>
+      <div style="margin-top:16px;display:flex;gap:8px;flex-wrap:wrap;">
+        <a id="link-gerador-eda"
+           class="acao"
+           style="text-decoration:none;display:inline-block;"
+           href="https://ekmogawa.github.io/Gerar-laudo-EDA/"
+           target="_self">Abrir gerador de EDA</a>
+        <a id="link-gerador-colono"
+           class="acao secundaria"
+           style="text-decoration:none;display:inline-block;"
+           href="https://ekmogawa.github.io/Gerar-Laudo-Colono/"
+           target="_self">Abrir gerador de Colono</a>
+      </div>
+      <div id="info-aguardando" class="msg info" style="margin-top:16px;">
+        Verificando sessão…
+      </div>
+    </section>
+
+    <!-- Tela principal -->
+    <section id="tela-principal" class="hidden">
+      <div class="card">
+        <h2>Banco de dados pessoal</h2>
+        <div id="resumo-banco">
+          <div class="msg info">Carregando...</div>
+        </div>
+      </div>
+
+      <div class="card" id="card-backup">
+        <h2>Backups do banco</h2>
+        <p style="font-size:13px;color:#555;margin-top:0;">
+          4 estados protegidos para evitar perda de dados.
+          O slot <strong>original</strong> é definido no seu primeiro acesso
+          (cópia do banco curado pelo admin no momento da criação) e fica
+          imutável daí em diante — funciona como rede de segurança final.
+          Os 3 slots numerados ficam à sua disposição para checkpoints manuais
+          do seu próprio banco.
+        </p>
+        <div id="lista-backups" class="lista-backups">
+          <div class="msg info">Carregando…</div>
+        </div>
+      </div>
+
+      <div class="card hidden" id="card-historico">
+        <h2>Histórico de importações</h2>
+        <p style="font-size:13px;color:#555;margin-top:0;">
+          Últimos 10 imports realizados nesta especialidade. Cada
+          entrada guarda o <code>dbAnterior</code> e pode ser revertida.
+        </p>
+        <div id="lista-historico" class="lista-historico"></div>
+      </div>
+
+      <div class="card">
+        <h2>Importar laudos Word</h2>
+        <p style="font-size:13px;color:#555;margin-top:0;">
+          Selecione ou arraste de 1 a 20 arquivos <code>.docx</code>. O conteúdo
+          é processado localmente — nada é enviado para servidor.
+        </p>
+
+        <div id="zona-upload" class="zona-upload">
+          <p class="zona-titulo">Arraste arquivos aqui</p>
+          <p class="zona-sub">ou</p>
+          <button id="btn-selecionar" class="acao secundaria" type="button">
+            Selecionar arquivos
+          </button>
+          <input id="input-arquivos" type="file" accept=".docx" multiple hidden>
+        </div>
+
+        <ul id="lista-arquivos" class="lista-arquivos"></ul>
+
+        <div id="acoes-upload" class="hidden" style="margin-top:12px;">
+          <button id="btn-processar" class="acao" type="button" disabled>
+            Processar arquivos
+          </button>
+          <button id="btn-limpar" class="acao secundaria" type="button">
+            Limpar
+          </button>
+        </div>
+      </div>
+
+      <div id="card-resultado" class="card hidden">
+        <h2>Resultado da análise (parser)</h2>
+        <div id="resumo-resultado" style="font-size:13px;color:#555;"></div>
+        <div id="arvore-resultado" class="arvore"></div>
+      </div>
+
+      <div id="card-revisao" class="card hidden">
+        <h2>Revisão de propostas</h2>
+
+        <div class="filtros-revisao">
+          <span style="font-size:12px;color:#555;">Filtrar:</span>
+          <button class="filtro-btn ativo" data-filtro="todos" type="button">Todos</button>
+          <button class="filtro-btn" data-filtro="atualizacao" type="button">Atualizações</button>
+          <button class="filtro-btn" data-filtro="novo" type="button">Novos</button>
+          <button class="filtro-btn" data-filtro="variante" type="button">Baixa confiança</button>
+          <button class="filtro-btn" data-filtro="pendentes" type="button">Não revisados</button>
+        </div>
+
+        <div class="acoes-massa">
+          <button id="btn-aceitar-matches" class="acao secundaria" type="button">
+            Aceitar todos com score "match"
+          </button>
+          <button id="btn-ignorar-variantes" class="acao secundaria" type="button">
+            Ignorar todas variantes/baixa confiança
+          </button>
+        </div>
+
+        <div id="lista-propostas" class="lista-propostas"></div>
+
+        <div class="rodape-revisao">
+          <span id="contador-revisao">0 de 0 propostas revisadas</span>
+          <button id="btn-aplicar" class="acao" type="button" disabled>
+            Aplicar alterações no Firebase
+          </button>
+        </div>
+      </div>
+
+      <div id="card-matching" class="card hidden">
+        <h2>Matching conceitual</h2>
+
+        <!-- Barra sticky com slider de tolerância e contadores ao vivo -->
+        <div id="barra-tolerancia" class="barra-tolerancia">
+          <div class="slider-row">
+            <label for="slider-tolerancia">
+              Tolerância:
+              <span id="valor-tolerancia">50</span>
+            </label>
+            <input id="slider-tolerancia" type="range" min="0" max="100" step="1" value="50">
+            <span class="slider-rotulos">
+              <small>rigoroso</small><small>permissivo</small>
+            </span>
+          </div>
+
+          <div id="contadores" class="contadores">
+            <span class="contador match">Matches: <b>0</b></span>
+            <span class="contador atualizacao">Atualizações: <b>0</b></span>
+            <span class="contador variante">Variantes: <b>0</b></span>
+            <span class="contador naoEncontrado">Não encontrados: <b>0</b></span>
+            <span class="contador novo">Itens novos: <b>0</b></span>
+          </div>
+
+          <details class="avancado">
+            <summary>Avançado</summary>
+            <div class="slider-row" style="margin-top:8px;">
+              <label for="slider-peso">
+                Peso conceito vs superfície:
+                <span id="valor-peso">0.60</span>
+              </label>
+              <input id="slider-peso" type="range" min="0" max="100" step="5" value="60">
+              <span class="slider-rotulos">
+                <small>só superfície</small><small>só conceito</small>
+              </span>
+            </div>
+            <p style="font-size:11px;color:#888;margin:6px 0 0 0;">
+              Mudar este valor recalcula todo o matching (mais lento). A
+              tolerância acima muda apenas a classificação ao vivo.
+            </p>
+          </details>
+        </div>
+
+        <div id="resumo-matching" style="font-size:13px;color:#555;"></div>
+
+        <details class="bloco-debug" open>
+          <summary>Item do banco × melhor trecho encontrado em cada arquivo</summary>
+          <div id="tabela-scores" class="container-tabela"></div>
+        </details>
+
+        <details class="bloco-debug">
+          <summary>Itens NOVOS sugeridos (trechos não cobertos por nenhum item)</summary>
+          <div id="tabela-novos" class="container-tabela"></div>
+        </details>
+
+        <details class="bloco-debug">
+          <summary>Consenso por item (agregação multi-arquivo)</summary>
+          <div id="tabela-consenso" class="container-tabela"></div>
+        </details>
+
+        <details class="bloco-debug">
+          <summary>Termos característicos por item (perfil TF-IDF)</summary>
+          <div id="tabela-perfil" class="container-tabela"></div>
+        </details>
+      </div>
+    </section>
+  </main>
+
+  <!-- Modal de confirmação dupla (Fase 6) -->
+  <div id="modal-overlay" class="modal-overlay hidden">
+    <div class="modal-box">
+      <h3 id="modal-titulo">Confirmar</h3>
+      <div id="modal-conteudo"></div>
+      <div class="modal-acoes">
+        <button id="modal-cancelar" type="button" class="acao secundaria">Cancelar</button>
+        <button id="modal-confirmar" type="button" class="acao">Confirmar</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Configuração e lógica -->
+  <script src="firebase-config.js"></script>
+  <script src="parser_word.js"></script>
+  <script src="matching.js"></script>
+  <script src="backup.js"></script>
+  <script src="funcoes_importador.js"></script>
+
+</body>
+</html>

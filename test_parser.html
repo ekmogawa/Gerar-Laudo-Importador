@@ -1,0 +1,638 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <title>Parser — smoke test</title>
+  <link rel="stylesheet" href="estilos.css">
+  <script src="parser_word.js"></script>
+  <script src="matching.js"></script>
+  <style>
+    main { max-width: 900px; }
+    .case {
+      background: #fff;
+      border-radius: 8px;
+      padding: 16px;
+      margin-bottom: 16px;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+    }
+    .case h3 { margin-top: 0; color: #2c5282; }
+    .input pre, .output pre {
+      background: #f7fafc;
+      padding: 8px;
+      font-size: 12px;
+      border-radius: 4px;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .output pre { background: #edf2f7; }
+    .verdict {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 10px;
+      font-size: 12px;
+      font-weight: 600;
+      margin-left: 8px;
+    }
+    .pass { background: #c6f6d5; color: #22543d; }
+    .fail { background: #fed7d7; color: #742a2a; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Parser smoke-test</h1>
+    <span class="meta" style="font-size:13px;">Validação Fase 2</span>
+  </header>
+  <main>
+    <div id="resultados"></div>
+  </main>
+
+  <script>
+  // Reimplementa o loop de processarArquivo() recebendo HTML direto.
+  // Os arquivos reais são lidos via FileReader + mammoth, mas o resto
+  // do pipeline (detecção, classificação, decomposição) opera sobre HTML.
+  function processarHtml(html, tipo) {
+    var secoes = [];
+    var orfaos = { paragrafos: [], clausulas: [] };
+    var atual = null;
+
+    var container = document.createElement('div');
+    container.innerHTML = html;
+    var blocos = container.querySelectorAll('p, h1, h2, h3, h4');
+
+    blocos.forEach(function (p) {
+      var detec = ParserWord.detectarSecao(p, tipo);
+      if (detec) {
+        var existente = secoes.filter(function (s) { return s.nome === detec.nome; })[0];
+        if (existente) atual = existente;
+        else {
+          atual = { nome: detec.nome, rotuloOriginal: detec.rotuloOriginal, paragrafos: [] };
+          secoes.push(atual);
+        }
+        if (detec.restoTexto) atual.paragrafos.push(detec.restoTexto);
+        return;
+      }
+      var txt = (p.textContent || '').trim();
+      if (!txt) return;
+      if (atual) atual.paragrafos.push(txt);
+      else       orfaos.paragrafos.push(txt);
+    });
+
+    var sentencasInferidas = 0;
+    if (orfaos.paragrafos.length) {
+      var restantes = [];
+      orfaos.paragrafos.forEach(function (par) {
+        ParserWord.quebrarSentencas(par).forEach(function (sent) {
+          var classif = ParserWord.classificarSentenca(sent, tipo);
+          if (classif) {
+            var sec = secoes.filter(function (s) { return s.nome === classif.secao; })[0];
+            if (!sec) {
+              sec = { nome: classif.secao, rotuloOriginal: '(inferido)', paragrafos: [] };
+              secoes.push(sec);
+            }
+            sec.paragrafos.push(sent);
+            sentencasInferidas++;
+          } else restantes.push(sent);
+        });
+      });
+      orfaos.paragrafos = restantes;
+    }
+
+    if (tipo === 'colono' && orfaos.paragrafos.length) {
+      var ex = secoes.filter(function (s) { return s.nome === 'exame'; })[0];
+      if (!ex) {
+        ex = { nome: 'exame', rotuloOriginal: '(implícito)', paragrafos: [] };
+        secoes.push(ex);
+      }
+      ex.paragrafos = orfaos.paragrafos.concat(ex.paragrafos);
+      orfaos.paragrafos = [];
+    }
+
+    secoes.forEach(function (s) {
+      s.clausulas = [];
+      s.sentencas = [];
+      s.paragrafos.forEach(function (par, idxP) {
+        ParserWord.quebrarSentencas(par).forEach(function (sent) {
+          s.sentencas.push({ texto: sent, paragrafoIdx: idxP, paragrafoOriginal: par });
+        });
+        ParserWord.decomporClausulas(par).forEach(function (c) {
+          s.clausulas.push({ texto: c, paragrafoOriginal: par });
+        });
+      });
+    });
+    orfaos.sentencas = [];
+    orfaos.paragrafos.forEach(function (par, idxP) {
+      ParserWord.quebrarSentencas(par).forEach(function (sent) {
+        orfaos.sentencas.push({ texto: sent, paragrafoIdx: idxP, paragrafoOriginal: par });
+      });
+      ParserWord.decomporClausulas(par).forEach(function (c) {
+        orfaos.clausulas.push({ texto: c, paragrafoOriginal: par });
+      });
+    });
+
+    return { secoes: secoes, orfaos: orfaos, sentencasInferidas: sentencasInferidas };
+  }
+
+  // ---- Casos de teste ----
+  var casos = [
+    {
+      titulo: 'EDA — cabeçalhos explícitos com <strong>',
+      tipo: 'eda',
+      html:
+        '<p><strong>Esôfago:</strong> calibre e distensibilidade preservados, sem lesões.</p>' +
+        '<p><strong>Estômago:</strong> presença de gastrite atrófica em corpo gástrico.</p>' +
+        '<p><strong>Duodeno:</strong> bulbo e segunda porção sem lesões.</p>',
+      esperado: function (r) {
+        var nomes = r.secoes.map(function (s) { return s.nome; });
+        return nomes.indexOf('esofago') !== -1 &&
+               nomes.indexOf('estomago') !== -1 &&
+               nomes.indexOf('duodeno') !== -1 &&
+               r.sentencasInferidas === 0 &&
+               r.orfaos.clausulas.length === 0;
+      }
+    },
+    {
+      titulo: 'EDA — bug B1: texto antes do <strong> (não deve ser tratado como header)',
+      tipo: 'eda',
+      html: '<p>Achados: <strong>Esôfago:</strong> normal.</p>',
+      esperado: function (r) {
+        // Esperamos que NÃO seja tratado como cabeçalho via Regra 1
+        // (pois há "Achados: " antes). A Regra 2 captura "Achados:" como
+        // sinônimo de "outros". Resultado: seção "outros".
+        var nomes = r.secoes.map(function (s) { return s.nome; });
+        return nomes.indexOf('outros') !== -1 && nomes.indexOf('esofago') === -1;
+      }
+    },
+    {
+      titulo: 'EDA — prosa sem cabeçalhos (classificação por âncoras)',
+      tipo: 'eda',
+      html:
+        '<p>O esôfago apresenta calibre preservado e ausência de hérnia hiatal.</p>' +
+        '<p>O estômago tem mucosa íntegra, sem sinais de gastrite.</p>',
+      esperado: function (r) {
+        var nomes = r.secoes.map(function (s) { return s.nome; });
+        return nomes.indexOf('esofago') !== -1 &&
+               nomes.indexOf('estomago') !== -1 &&
+               r.sentencasInferidas >= 2;
+      }
+    },
+    {
+      titulo: 'Colono — sem cabeçalhos, prosa única (fallback exame)',
+      tipo: 'colono',
+      html:
+        '<p>Toque retal sem alterações. Introdução do colonoscópio até o íleo terminal.</p>' +
+        '<p>Cólons ascendente, transverso, descendente e sigmoide com mucosa preservada.</p>',
+      esperado: function (r) {
+        var nomes = r.secoes.map(function (s) { return s.nome; });
+        return nomes.indexOf('exame') !== -1 && r.orfaos.clausulas.length === 0;
+      }
+    },
+    {
+      titulo: 'Colono — cabeçalho composto "Indicação clínica:"',
+      tipo: 'colono',
+      html: '<p><strong>Indicação clínica:</strong> rastreio.</p>',
+      esperado: function (r) {
+        var nomes = r.secoes.map(function (s) { return s.nome; });
+        return nomes.indexOf('indicacao') !== -1;
+      }
+    },
+    {
+      titulo: 'Colono — cabeçalho em maiúsculas isoladas (Regra 3)',
+      tipo: 'colono',
+      html:
+        '<p>EXAME</p>' +
+        '<p>Toque retal sem alterações. Mucosa colorretal de aspecto preservado.</p>',
+      esperado: function (r) {
+        var nomes = r.secoes.map(function (s) { return s.nome; });
+        return nomes.indexOf('exame') !== -1;
+      }
+    },
+    {
+      titulo: 'EDA — equipamento e sedação',
+      tipo: 'eda',
+      html:
+        '<p>Exame realizado com equipamento Olympus GIF-H190.</p>' +
+        '<p>Paciente sob sedação com fentanil 100mcg e midazolam 5mg.</p>',
+      esperado: function (r) {
+        var nomes = r.secoes.map(function (s) { return s.nome; });
+        return nomes.indexOf('equipamento') !== -1 &&
+               nomes.indexOf('sedacao') !== -1;
+      }
+    },
+    {
+      titulo: 'EDA — cláusulas curtas (<3 palavras descartadas)',
+      tipo: 'eda',
+      html: '<p><strong>Esôfago:</strong> Calibre preservado, sem lesões, ausência de hérnia hiatal.</p>',
+      esperado: function (r) {
+        var sec = r.secoes.filter(function (s) { return s.nome === 'esofago'; })[0];
+        // 3 cláusulas: "Calibre preservado" (2w drop), "sem lesões" (2w drop), "ausência de hérnia hiatal" (4w keep)
+        // Esperamos 1 cláusula
+        return sec && sec.clausulas.length === 1 &&
+               sec.clausulas[0].texto.indexOf('hérnia hiatal') !== -1;
+      }
+    }
+  ];
+
+  // ---- Renderização ----
+  function escapar(s) {
+    return String(s).replace(/[&<>]/g, function (c) {
+      return c === '&' ? '&amp;' : c === '<' ? '&lt;' : '&gt;';
+    });
+  }
+
+  var div = document.getElementById('resultados');
+  var passou = 0, falhou = 0;
+  casos.forEach(function (c, i) {
+    var resultado;
+    var ok = false;
+    var erro = null;
+    try {
+      resultado = processarHtml(c.html, c.tipo);
+      ok = c.esperado(resultado);
+    } catch (e) {
+      erro = e.message;
+    }
+    if (ok) passou++; else falhou++;
+
+    var resumoSec = (resultado && resultado.secoes || []).map(function (s) {
+      return s.nome + ' (' + s.clausulas.length + ' cláus' +
+             (s.rotuloOriginal && s.rotuloOriginal.charAt(0) === '('
+               ? ' ' + s.rotuloOriginal : '') + ')';
+    }).join(', ');
+
+    var clausulas = (resultado && resultado.secoes || []).map(function (s) {
+      return s.clausulas.map(function (c) { return '  • [' + s.nome + '] ' + c.texto; }).join('\n');
+    }).filter(Boolean).join('\n');
+
+    var orfaos = (resultado && resultado.orfaos.clausulas || []).map(function (c) {
+      return '  • (orfão) ' + c.texto;
+    }).join('\n');
+
+    div.insertAdjacentHTML('beforeend',
+      '<div class="case">' +
+        '<h3>' + (i + 1) + '. ' + escapar(c.titulo) +
+          '<span class="verdict ' + (ok ? 'pass' : 'fail') + '">' +
+            (ok ? 'OK' : 'FALHA') + '</span>' +
+        '</h3>' +
+        '<div><strong>Tipo:</strong> ' + c.tipo + '</div>' +
+        '<div class="input"><strong>Entrada:</strong><pre>' + escapar(c.html) + '</pre></div>' +
+        (erro
+          ? '<div class="output" style="color:#742a2a;">Erro: ' + escapar(erro) + '</div>'
+          : '<div class="output"><strong>Seções:</strong> ' + escapar(resumoSec) +
+            (resultado.sentencasInferidas
+              ? ' · <em>' + resultado.sentencasInferidas + ' inferida(s)</em>'
+              : '') +
+            '<pre>' + escapar(clausulas + (orfaos ? '\n' + orfaos : '')) + '</pre></div>'
+        ) +
+      '</div>');
+  });
+
+  // ---- Casos de teste do MATCHING (Fase 3) ----
+  var bancoEdaMini = {
+    esofago: [
+      { nome: 'Normal', id: 'esof-1',
+        valor: 'calibre e distensibilidade preservados. Ausência de lesões de mucosa. A transição esofagogástrica coincide com o pinçamento diafragmático.' },
+      { nome: 'LAA',    id: 'esof-2',
+        valor: 'calibre e distensibilidade preservados. Presença de erosões menores que 5 mm ao nível da transição esofagogástrica.' },
+      { nome: 'Barrett', id: 'esof-3',
+        valor: 'esôfago de Barrett curto, com língua de mucosa de aspecto colunar acima da transição esofagogástrica. Cromoscopia digital evidencia padrão sugestivo de metaplasia intestinal.' }
+    ],
+    estomago: [
+      { nome: 'Normal',  id: 'est-1',
+        valor: 'mucosa gástrica de aspecto preservado em todo o órgão. Pregueado e distensibilidade normais.' },
+      { nome: 'Gastrite atrófica', id: 'est-2',
+        valor: 'mucosa gástrica com áreas de atrofia e metaplasia intestinal em corpo gástrico, com perda do padrão vascular regular.' }
+    ]
+  };
+
+  var casosMatching = [
+    {
+      titulo: 'Matching invertido — item Barrett deve achar janela com Barrett',
+      html: '<p><strong>Esôfago:</strong> esôfago de Barrett curto com metaplasia intestinal.</p>',
+      tipo: 'eda',
+      banco: bancoEdaMini,
+      esperado: function (m) {
+        var sec = m.porArquivo[0].secoes.filter(function (s) { return s.nome === 'esofago'; })[0];
+        if (!sec) return false;
+        var barrett = sec.matchesPorItem.filter(function (x) {
+          return x.item.id === 'esof-3';
+        })[0];
+        // A janela vencedora do item Barrett deve incluir a sentença com Barrett
+        return barrett && barrett.melhor &&
+               barrett.melhor.janela.texto.indexOf('Barrett') !== -1;
+      }
+    },
+    {
+      titulo: 'Matching invertido — texto sem âncoras gera item NOVO sugerido',
+      html: '<p><strong>Esôfago:</strong> textura inusitada de aspecto bem peculiar nesta região.</p>',
+      tipo: 'eda',
+      banco: bancoEdaMini,
+      esperado: function (m) {
+        var sec = m.porArquivo[0].secoes.filter(function (s) { return s.nome === 'esofago'; })[0];
+        if (!sec) return false;
+        // A sentença não casa com nenhum item -> deve aparecer em itensNovos
+        return sec.itensNovos.length >= 1 &&
+               sec.itensNovos[0].texto.indexOf('inusitada') !== -1;
+      }
+    },
+    {
+      titulo: 'Matching invertido — item gastrite atrófica acha sua janela',
+      html: '<p><strong>Estômago:</strong> mucosa gástrica com áreas de metaplasia intestinal em corpo.</p>',
+      tipo: 'eda',
+      banco: bancoEdaMini,
+      esperado: function (m) {
+        var sec = m.porArquivo[0].secoes.filter(function (s) { return s.nome === 'estomago'; })[0];
+        if (!sec) return false;
+        var gastrite = sec.matchesPorItem.filter(function (x) {
+          return x.item.id === 'est-2';
+        })[0];
+        return gastrite && gastrite.melhor &&
+               gastrite.melhor.janela.texto.indexOf('metaplasia') !== -1;
+      }
+    },
+    {
+      titulo: 'Dice coefficient — strings idênticas = 1.0',
+      direto: true,
+      esperado: function () {
+        var d = Matching.diceSimilaridade('teste idêntico', 'teste idêntico');
+        return d === 1;
+      }
+    },
+    {
+      titulo: 'Dice coefficient — strings totalmente diferentes ≈ 0',
+      direto: true,
+      esperado: function () {
+        var d = Matching.diceSimilaridade('abcdefgh', 'wxyz1234');
+        return d < 0.1;
+      }
+    },
+    {
+      titulo: 'TF-IDF — perfil de item Barrett inclui "barrett" como característico',
+      direto: true,
+      esperado: function () {
+        var p = Matching.construirPerfilSecao(bancoEdaMini.esofago);
+        var barrett = p.filter(function (x) { return x.item.id === 'esof-3'; })[0];
+        return barrett && barrett.termosCaracteristicos.some(function (c) {
+          return c.termo === 'barrett';
+        });
+      }
+    },
+    {
+      titulo: 'B1 — Dice deve ser acent-insensitive ("esôfago" === "esofago")',
+      direto: true,
+      esperado: function () {
+        var d = Matching.diceSimilaridade('esôfago de Barrett', 'esofago de Barrett');
+        return d > 0.99;  // praticamente 1
+      }
+    },
+    {
+      titulo: 'B1 — Dice deve ignorar tags <br> em valor de banco colono',
+      direto: true,
+      esperado: function () {
+        var a = 'Toque retal sem alterações. Introdução do colonoscópio.';
+        var b = 'Toque retal sem alterações.<br>Introdução do colonoscópio.';
+        var d = Matching.diceSimilaridade(a, b);
+        return d > 0.99;
+      }
+    },
+    {
+      titulo: 'B2 — Perfil cacheia bigramasItem para reuso',
+      direto: true,
+      esperado: function () {
+        var p = Matching.construirPerfilSecao(bancoEdaMini.esofago);
+        return p.every(function (entry) {
+          return entry.bigramasItem && Object.keys(entry.bigramasItem).length > 0;
+        });
+      }
+    },
+    {
+      titulo: 'Medidas — "5 mm" e "5mm" produzem mesmo token',
+      direto: true,
+      esperado: function () {
+        var a = Matching.tokenizar('erosões menores que 5 mm');
+        var b = Matching.tokenizar('erosões menores que 5mm');
+        return a.indexOf('5mm') !== -1 && b.indexOf('5mm') !== -1;
+      }
+    },
+    {
+      titulo: 'Consenso invertido — múltiplos arquivos com mesma janela viram 1 grupo',
+      direto: true,
+      esperado: function () {
+        var sentenca = { texto: 'esôfago de Barrett curto com metaplasia intestinal.', paragrafoOriginal: '' };
+        var fakeResults = [1, 2, 3].map(function (n) {
+          return {
+            arquivo: 'laudo' + n + '.docx',
+            secoes: [{
+              nome: 'esofago',
+              rotuloOriginal: 'Esôfago',
+              paragrafos: ['esôfago de Barrett curto com metaplasia intestinal.'],
+              sentencas: [sentenca],
+              clausulas: []
+            }],
+            orfaos: { paragrafos: [], clausulas: [], sentencas: [] }
+          };
+        });
+        var m = Matching.analisar(fakeResults, bancoEdaMini, { limiarMatch: 0.0 });
+        var consenso = m.consenso.esofago || [];
+        var barrettEntry = consenso.filter(function (e) {
+          return e.item.id === 'esof-3';
+        })[0];
+        return barrettEntry &&
+               barrettEntry.frequenciaArquivos === 3 &&
+               barrettEntry.variantes.length === 0;
+      }
+    },
+    {
+      titulo: 'Janelas — gerarJanelas produz combinações 1..N contíguas',
+      direto: true,
+      esperado: function () {
+        var sentencas = [
+          { texto: 'a primeira sentença aqui.' },
+          { texto: 'a segunda sentença completa.' },
+          { texto: 'e a terceira finaliza tudo.' }
+        ];
+        var js = Matching.gerarJanelas(sentencas, 3);
+        // Esperamos: 3 (tam=1) + 2 (tam=2) + 1 (tam=3) = 6 janelas
+        return js.length === 6 &&
+               js[0].tamanho === 1 &&
+               js[js.length - 1].tamanho === 3;
+      }
+    },
+    {
+      titulo: 'Itens novos — janela sem cobertura sobrevive ao detector',
+      direto: true,
+      esperado: function () {
+        var sentencas = [
+          { texto: 'esôfago de Barrett com metaplasia intestinal.' },
+          { texto: 'achado completamente novo nunca antes descrito.' }
+        ];
+        var perfilSec = Matching.construirPerfilSecao(bancoEdaMini.esofago);
+        var resultado = Matching.caçarItensEmSecao(sentencas, perfilSec, {});
+        var novos = Matching.detectarItensNovos(sentencas, resultado.matchesPorItem, 0.30);
+        return novos.length >= 1 &&
+               novos.some(function (g) { return g.texto.indexOf('completamente novo') !== -1; });
+      }
+    },
+    {
+      titulo: 'Fase 4 — derivaLimiares produz faixas corretas',
+      direto: true,
+      esperado: function () {
+        var l0   = Matching.derivaLimiares(0);
+        var l50  = Matching.derivaLimiares(50);
+        var l100 = Matching.derivaLimiares(100);
+        // tolerancia=0 → rigoroso → limiar_match alto, limiar_novo alto
+        // tolerancia=100 → permissivo → limiar_match baixo, limiar_novo baixo
+        return Math.abs(l0.limiarMatch - 0.85) < 1e-9 &&
+               Math.abs(l50.limiarMatch - 0.70) < 1e-9 &&
+               Math.abs(l100.limiarMatch - 0.55) < 1e-9 &&
+               Math.abs(l0.limiarNovo - 0.45) < 1e-9 &&
+               Math.abs(l100.limiarNovo - 0.25) < 1e-9;
+      }
+    },
+    {
+      titulo: 'Fase 4 — classificarScore reflete tolerância',
+      direto: true,
+      esperado: function () {
+        // Score 0.78 com tolerância 50 (limiarMatch=0.70): match
+        // Score 0.78 com tolerância 0  (limiarMatch=0.85): atualizacao
+        var c50 = Matching.classificarScore(0.78, 50);
+        var c0  = Matching.classificarScore(0.78, 0);
+        // Score 0.50: nem match nem atualizacao; com tol=50 (limiarNovo=0.35)
+        // cai em variante; com tol=0 (limiarNovo=0.45) ainda cai em variante
+        var c50b = Matching.classificarScore(0.50, 50);
+        // Score muito baixo
+        var c50c = Matching.classificarScore(0.10, 50);
+        return c50 === 'match' &&
+               c0  === 'atualizacao' &&
+               c50b === 'variante' &&
+               c50c === 'naoEncontrado';
+      }
+    },
+    {
+      titulo: 'Pipeline invertido — itens distintos elegem janelas distintas',
+      direto: true,
+      esperado: function () {
+        // 2 sentenças, cada uma alinhada a um item diferente do banco.
+        // Item Barrett deve eleger a sentença 0 e item LAA a sentença 1.
+        var sentencas = [
+          { texto: 'esôfago de Barrett curto com língua colunar e metaplasia intestinal.' },
+          { texto: 'presença de erosões menores que 5 mm na transição esofagogástrica.' }
+        ];
+        var perfilSec = Matching.construirPerfilSecao(bancoEdaMini.esofago);
+        var resultado = Matching.caçarItensEmSecao(sentencas, perfilSec, {});
+
+        var barrett = resultado.matchesPorItem.filter(function (m) {
+          return m.item.id === 'esof-3';
+        })[0];
+        var laa = resultado.matchesPorItem.filter(function (m) {
+          return m.item.id === 'esof-2';
+        })[0];
+
+        if (!barrett || !laa || !barrett.melhor || !laa.melhor) return false;
+
+        // Invariante: cada item elege a janela que contém sua frase própria.
+        var barrettWindow = barrett.melhor.janela.texto;
+        var laaWindow     = laa.melhor.janela.texto;
+        return barrettWindow.indexOf('Barrett') !== -1 &&
+               laaWindow.indexOf('erosões') !== -1;
+      }
+    }
+  ];
+
+  // ---- Casos de teste de DIFF (Fase 5) ----
+  // Reimplementação local da diff para testar sem depender da UI
+  function diffPalavrasLocal(antes, depois) {
+    var a = String(antes || '').split(/(\s+)/);
+    var b = String(depois || '').split(/(\s+)/);
+    var m = a.length, n = b.length;
+    var dp = [];
+    for (var i = 0; i <= m; i++) dp.push(new Array(n + 1).fill(0));
+    for (var i = 1; i <= m; i++) {
+      for (var j = 1; j <= n; j++) {
+        if (a[i-1] === b[j-1]) dp[i][j] = dp[i-1][j-1] + 1;
+        else dp[i][j] = Math.max(dp[i-1][j], dp[i][j-1]);
+      }
+    }
+    var ops = [];
+    var i = m, j = n;
+    while (i > 0 && j > 0) {
+      if (a[i-1] === b[j-1]) { ops.unshift({type:'keep', value:a[i-1]}); i--; j--; }
+      else if (dp[i-1][j] >= dp[i][j-1]) { ops.unshift({type:'rem', value:a[i-1]}); i--; }
+      else { ops.unshift({type:'add', value:b[j-1]}); j--; }
+    }
+    while (i > 0) ops.unshift({type:'rem', value:a[--i]});
+    while (j > 0) ops.unshift({type:'add', value:b[--j]});
+    return ops;
+  }
+
+  casosMatching.push(
+    {
+      titulo: 'Fase 5 — Diff: textos idênticos só têm "keep"',
+      direto: true,
+      esperado: function () {
+        var ops = diffPalavrasLocal('foo bar baz', 'foo bar baz');
+        return ops.every(function (o) { return o.type === 'keep'; });
+      }
+    },
+    {
+      titulo: 'Fase 5 — Diff detecta substituição de palavra',
+      direto: true,
+      esperado: function () {
+        var ops = diffPalavrasLocal('mucosa preservada', 'mucosa friável');
+        var temAdd = ops.some(function (o) { return o.type === 'add' && /friável/.test(o.value); });
+        var temRem = ops.some(function (o) { return o.type === 'rem' && /preservada/.test(o.value); });
+        return temAdd && temRem;
+      }
+    },
+    {
+      titulo: 'Fase 5 — Diff trata adição no fim',
+      direto: true,
+      esperado: function () {
+        var ops = diffPalavrasLocal('a b c', 'a b c d');
+        var ultimoAdd = ops.filter(function (o) { return o.type === 'add'; }).pop();
+        return ultimoAdd && /d/.test(ultimoAdd.value);
+      }
+    }
+  );
+
+  // Roda os casos de matching depois dos casos de parsing
+  casosMatching.forEach(function (c, k) {
+    var ok = false, erro = null;
+    try {
+      if (c.direto) {
+        ok = c.esperado();
+      } else {
+        // Simula um resultado do parser usando processarHtml
+        var parserRes = processarHtml(c.html, c.tipo);
+        var pseudoResultados = [{
+          arquivo: 'teste.docx',
+          secoes: parserRes.secoes,
+          orfaos: parserRes.orfaos,
+          imagensDescartadas: 0,
+          sentencasInferidas: parserRes.sentencasInferidas
+        }];
+        var matching = Matching.analisar(pseudoResultados, c.banco, {});
+        ok = c.esperado(matching);
+      }
+    } catch (e) {
+      erro = e.message;
+    }
+    if (ok) passou++; else falhou++;
+    div.insertAdjacentHTML('beforeend',
+      '<div class="case">' +
+        '<h3>M' + (k + 1) + '. ' + escapar(c.titulo) +
+          '<span class="verdict ' + (ok ? 'pass' : 'fail') + '">' +
+            (ok ? 'OK' : 'FALHA') + '</span>' +
+        '</h3>' +
+        (erro ? '<div style="color:#742a2a;">Erro: ' + escapar(erro) + '</div>' : '') +
+      '</div>');
+  });
+
+  div.insertAdjacentHTML('afterbegin',
+    '<div class="case" style="background:#edf2f7;">' +
+      '<h3>Resumo: ' +
+        '<span class="verdict pass">' + passou + ' OK</span>' +
+        (falhou ? '<span class="verdict fail">' + falhou + ' FALHA</span>' : '') +
+      '</h3></div>');
+  </script>
+</body>
+</html>
