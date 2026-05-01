@@ -598,6 +598,19 @@
         orfaos.paragrafos = [];
       }
 
+      // Fallback EDA: órfãos não classificados vão para "outros". Sem
+      // isso, arquivos .txt/.rtf/.doc (e .docx sem cabeçalhos claros)
+      // produzem zero seções e o matching/revisão ficam vazios.
+      if (tipo === 'eda' && orfaos.paragrafos.length) {
+        var outrosSec = secoes.filter(function (s) { return s.nome === 'outros'; })[0];
+        if (!outrosSec) {
+          outrosSec = { nome: 'outros', rotuloOriginal: '(implícito)', paragrafos: [] };
+          secoes.push(outrosSec);
+        }
+        outrosSec.paragrafos = orfaos.paragrafos.concat(outrosSec.paragrafos);
+        orfaos.paragrafos = [];
+      }
+
       // Decompor cada seção em cláusulas (Camada 1) E em sentenças.
       // - clausulas: split fino por vírgula/ponto/e/ou (legado, cobertura curta)
       // - sentencas: split apenas por . ! ? — granularidade preferida pelo
