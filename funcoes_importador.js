@@ -431,7 +431,126 @@ function handlerRestaurarBackup(slot) {
   if (!confirm('RESTAURAR ' + slot.toUpperCase() + ' agora?\n\n' +
                'Isto vai SUBSTITUIR o banco ativo (' +
                (_tipo === 'eda' ? 'dbEDA' : 'dbColono') + ') por este snapshot.\n\n' +
-               'Os apps geradores irão refletir esta versão na próxima leitura.\n\n' +
+               'Os apps geradores irão ref              // ...existing code...
+              
+              // Estado global da aplicação (adicionado)
+              let sugestoesGlobais = [];
+              
+              // Detectar tipo via URL (eda ou colono) (adicionado)
+              function getTipo() {
+                  const urlParams = new URLSearchParams(window.location.search);
+                  return urlParams.get('tipo') || 'eda';
+              }
+              
+              // Carregar _DB específico (EDA ou Colono) (adicionado)
+              async function carregarDBAtual() {
+                  const tipo = getTipo();
+                  const uid = firebase.auth().currentUser.uid;
+                  const docRef = db.collection('users').doc(uid);
+                  const doc = await docRef.get();
+                  return doc.exists ? doc.data()[`db${tipo.charAt(0).toUpperCase() + tipo.slice(1)}`] : {}; // Banco nunca vazio
+              }
+              
+              // Processar arquivos (calcula sugestoes uma vez) (modificado)
+              async function processarArquivos(arquivos) {
+                  const dbAtual = await carregarDBAtual();
+                  const tipo = getTipo();
+                  sugestoesGlobais = [];
+                  
+                  for (const arquivo of arquivos) {
+                      const textoLaudo = await parsearArquivo(arquivo);
+                      
+                      for (const secao in dbAtual) {
+                          if (!Array.isArray(dbAtual[secao])) continue;
+                          for (const item of dbAtual[secao]) {
+                              const textoSecao = extrairSecao(textoLaudo, secao);
+                              if (!textoSecao) continue;
+                              
+                              const match = calcularSimilaridadeInvertida(item.nome, textoSecao);
+                              const threshold = parseFloat(document.getElementById('sliderThreshold').value);
+                              
+                              if (match.similaridade > threshold) {
+                                  sugestoesGlobais.push({
+                                      item,
+                                      secao,
+                                      novoTexto: match.paragrafo,
+                                      arquivo: arquivo.name,
+                                      similaridade: match.similaridade,
+                                      conclusaoMatch: null
+                                  });
+                                  
+                                  // Procurar conclusão análoga
+                                  const textoConclusao = extrairSecao(textoLaudo, 'conclusao');
+                                  if (textoConclusao) {
+                                      const matchConclusao = calcularSimilaridadeInvertida(item.nome, textoConclusao);
+                                      if (matchConclusao.similaridade > threshold) {
+                                          const itemConclusao = dbAtual.conclusao.find(c => c.nome === item.nome);
+                                          if (itemConclusao) {
+                                              sugestoesGlobais[sugestoesGlobais.length - 1].conclusaoMatch = {
+                                                  item: itemConclusao,
+                                                  novoTexto: matchConclusao.paragrafo
+                                              };
+                                          }
+                                      }
+                                  }
+                              }
+                          }
+                      }
+                  }
+                  
+                  filtrarEExibirSugestoes();
+              }
+              
+              // Filtrar e exibir sugestoes baseado no slider (em tempo real) (adicionado)
+              function filtrarEExibirSugestoes() {
+                  const threshold = parseFloat(document.getElementById('sliderThreshold').value);
+                  const sugestoesFiltradas = sugestoesGlobais.filter(s => s.similaridade > threshold);
+                  exibirSugestoes(sugestoesFiltradas);
+              }
+              
+              // Exibir sugestoes (incluindo conclusão) (modificado)
+              function exibirSugestoes(sugestoes) {
+                  const container = document.getElementById('sugestoesContainer');
+                  container.innerHTML = '';
+                  sugestoes.forEach(s => {
+                      const div = document.createElement('div');
+                      div.innerHTML = `
+                          <p><strong>Item (${s.secao}):</strong> ${s.item.nome}</p>
+                          <p><strong>Novo Texto:</strong> ${s.novoTexto}</p>
+                          <p><strong>Similaridade:</strong> ${s.similaridade.toFixed(2)}</p>
+                          ${s.conclusaoMatch ? `<p><strong>Conclusão Análoga:</strong> ${s.conclusaoMatch.novoTexto}</p>` : ''}
+                          <button onclick="aceitarSugestao('${s.secao}', '${s.item.id}', '${s.novoTexto}', '${s.conclusaoMatch ? s.conclusaoMatch.item.id : ''}', '${s.conclusaoMatch ? s.conclusaoMatch.novoTexto : ''}')">Aceitar</button>
+                      `;
+                      container.appendChild(div);
+                  });
+              }
+              
+              // Aceitar sugestao (substituir nome no corpo e valor na conclusão) (modificado)
+              function aceitarSugestao(secao, itemId, novoTexto, conclusaoId, novoTextoConclusao) {
+                  const item = _DB[secao].find(i => i.id === itemId);
+                  if (item) item.nome = novoTexto;
+                  if (conclusaoId && novoTextoConclusao) {
+                      const itemConclusao = _DB.conclusao.find(c => c.id === conclusaoId);
+                      if (itemConclusao) itemConclusao.valor = novoTextoConclusao;
+                  }
+                  salvarDB();
+              }
+              
+              // ...existing code...
+              
+              // Adicionar no DOMContentLoaded (modificado)
+              document.addEventListener('DOMContentLoaded', function () {
+                  inicializarFirebase();
+                  configurarUpload();
+                  configurarSliders();
+                  configurarFiltrosRevisao();
+              
+                  // Adicionar listener para slider em tempo real
+                  document.getElementById('sliderThreshold').addEventListener('input', filtrarEExibirSugestoes);
+              
+                  var btnLogout = document.getElementById('btn-logout');
+                  if (btnLogout) btnLogout.addEventListener('click', fazerLogout);
+              });ir esta versão na próxima leitura.\n\n' +
                'Uma entrada de auditoria será adicionada ao histórico.\n\n' +
                'Tem certeza?')) {
     return;

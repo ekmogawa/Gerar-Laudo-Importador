@@ -1,4 +1,57 @@
-<!DOCTYPE html>
+// ...existing code...
+  function gerarJanelas(sentencas, maxTamanho) {
+    var janelas = [];
+    for (var i = 0; i < sentencas.length; i++) {
+      for (var t = 1; t <= maxTamanho && (i + t) <= sentencas.length; t++) {
+        var trecho = [];
+        for (var j = i; j < i + t; j++) {
+          trecho.push(sentencas[j].texto);
+        }
+        janelas.push({
+          inicio: i,
+          fim:    i + t - 1,
+          texto:  trecho.join(' '),
+          paragrafoOriginal: (sentencas[i] && sentencas[i].paragrafoOriginal) || trecho.join(' ')
+        });
+      }
+    }
+    return janelas;
+  }
+  // ...existing code...
+  function agregarConsensoPorItem(porArquivo, opts) {
+    opts = opts || {};
+    var diceThreshold = (typeof opts.diceThreshold === 'number')
+      ? opts.diceThreshold : 0.85;
+    var limiarMatch = (typeof opts.limiarMatch === 'number')
+      ? opts.limiarMatch : 0.65;
+
+    var bucket = {};
+
+    porArquivo.forEach(function (pa) {
+      (pa.secoes || []).forEach(function (sec) {
+        (sec.matchesPorItem || []).forEach(function (r) {
+          if (!r.melhor || r.melhor.score.final < limiarMatch) return;
+          var item = r.melhor.item;
+          var key = (item && (item.id || item.nome)) || 'sem-id';
+          if (!bucket[r.secao]) bucket[r.secao] = {};
+          if (!bucket[r.secao][key]) {
+            bucket[r.secao][key] = {
+              item:       item,
+              candidatos: []
+            };
+          }
+          bucket[r.secao][key].candidatos.push({
+            texto:             r.melhor.janela.paragrafoOriginal || r.melhor.janela.texto,
+            paragrafoOriginal: r.melhor.janela.paragrafoOriginal || r.melhor.janela.texto,
+            janela:            r.melhor.janela,
+            score:             r.melhor,
+            arquivo:           pa.arquivo
+          });
+        });
+      });
+    });
+    // ...existing code...
+  }<!DOCTYPE html>
 <html lang="pt-BR">
 <head>
   <meta charset="UTF-8">
